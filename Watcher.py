@@ -6,7 +6,7 @@ from matplotlib.figure import Figure
 from matplotlib.backend_bases import key_press_handler
 from matplotlib.backends.backend_qt4agg import (
     FigureCanvasQTAgg as FigureCanvas,
-    NavigationToolbar2QTAgg as NavigationToolbar)
+    NavigationToolbar2QT as NavigationToolbar)
 from PyQt4.QtCore import *
 from PyQt4.QtGui import *
 
@@ -16,6 +16,9 @@ import pandas as pd
 __author__ = 'minosniu'
 
 
+def indices(func, a):
+    return [i for (i, val) in enumerate(a) if func(val)]
+
 class Watcher(QMainWindow):
     """"""
 
@@ -23,14 +26,17 @@ class Watcher(QMainWindow):
         """Constructor for Viewer"""
         self.freezer = freezer
         self.numTrials = 0
-        self.currTrialId = 0
+        self.currTrialNum = 0
         self.allTrials = None
         self.allAlignedTrials = None
         self.allOnsets = None
+        self.idList = None
 
         # # Useful stuff
         self.onsetLine1 = None
         self.onsetLine2 = None
+        
+        self.isDragging = False
 
         QMainWindow.__init__(self, parent)
         # self.showMaximized()
@@ -40,20 +46,34 @@ class Watcher(QMainWindow):
     def queryData(self, queryStr):
         """Query some data from freezer
         """
+        
+        self.idList = []
+        
         self.allTrials = []
         self.allAlignedTrials = []
         self.allOnsets = []
+        
+        self.allQueryResults = {} # {'idxxx': {'var1':value1, 'var2':value2...}}
         self.queryStr = queryStr
 
         # allDocs = self.freezer.processed.find(eval(self.queryStr))
         allDocs = self.freezer.posts.find(eval(self.queryStr))
         for doc in allDocs:
             s = StringIO.StringIO(doc['trialData'])
-            t = pd.read_csv(s)
-            self.allTrials.append(t)
+            tTrialData = pd.read_csv(s)
+            self.allTrials.append(tTrialData)
 
             t = 0#doc['timeOnset']
             self.allOnsets.append(t)
+            
+            tId = doc['_id']
+            self.idList.append(tId)
+            
+            self.allQueryResults[tId] = {
+                'isAccepted': doc['isAccepted'],
+                'trialData': tTrialData,
+                'timeOnset': int(0.0)
+            }
 
         self.numTrials = len(self.allTrials)
 
@@ -72,6 +92,32 @@ class Watcher(QMainWindow):
         except:
             print("Error updating")
 
+    def freezeAllIsAccepted(self):
+        """Freeze timeOnset field in Freezer
+        """
+        allDocs = self.freezer.processed.find(eval(self.queryStr))
+        try:
+            for isAccepted, doc in zip(self.allQueryResults[self.idList[self.currTrialNum]]['isAccepted'], allDocs):
+                print isAccepted, doc['_id']
+                self.freezer.processed.update({'_id': doc['_id']},
+                                              {'$set': {'isAccepted': isAccepted}})
+            print("Froze %d isAccepted flags" % len(self.allIsAccepted))
+        except:
+            print("Error updating")            
+
+    def freezeAllQueryResults(self):
+        """Freeze timeOnset field in Freezer
+        """        
+        try:
+            for id in self.idList:
+                print id, {'isAccepted': self.allQueryResults[id]['isAccepted']}
+                self.freezer.processed.update({'_id': id},
+                                              {'$set': {'isAccepted': self.allQueryResults[id]['isAccepted'],
+                                                        'timeOnset': int(self.allQueryResults[id]['timeOnset'])}})
+            print("Froze %d isAccepted flags" % len(self.idList))
+        except:
+            print("Error freezing")
+
     def createMainFrame(self):
         self.main_frame = QWidget()
 
@@ -83,17 +129,23 @@ class Watcher(QMainWindow):
 
         self.mpl_toolbar = NavigationToolbar(self.canvas, self.main_frame)
 
-        # Other GUI controls
-        #
-        self.textbox = QTextEdit("""{"analystName": "Minos Niu",
-                                     "gammaDyn": 100,
-                                     "gammaSta": 100}
+        ### Linking some events        
+        self.canvas.mpl_connect('key_press_event', self.onKey)
+        self.canvas.mpl_connect('pick_event', self.onPick)
+        self.canvas.mpl_connect('button_press_event', self.onMouseDown)
+        self.canvas.mpl_connect('button_release_event', self.onMouseUp)
+        self.canvas.mpl_connect('motion_notify_event', self.onMouseMotion)
+
+
+
+
+        self.textbox = QTextEdit("""{"analystName": "zcwaxs"}
                                  """)
         self.textbox.selectAll()
         self.textbox.setMinimumWidth(200)
 
         self.queryButton = QPushButton("&Query")
-        self.connect(self.queryButton, SIGNAL('clicked()'), self.onSubmit)
+        self.connect(self.queryButton, SIGNAL('clicked()'), self.onSubmitQuery)
 
         self.fwdButton = QPushButton("&>>")
         self.connect(self.fwdButton, SIGNAL('clicked()'), self.onFwd)
@@ -108,12 +160,17 @@ class Watcher(QMainWindow):
         self.grid_cb.setChecked(False)
         # self.connect(self.grid_cb, SIGNAL('stateChanged(int)'), self.onGrid)
 
+        self.isAcceptedCB = QCheckBox("Accept?")
+        self.isAcceptedCB.setChecked(False)
+        self.connect(self.isAcceptedCB, SIGNAL('stateChanged(int)'), self.onChangeIsAccepted)
+        
         slider_label = QLabel('Bar width (%):')
         self.slider = QSlider(Qt.Horizontal)
         self.slider.setRange(1, 100)
         self.slider.setValue(20)
         self.slider.setTracking(True)
         self.slider.setTickPosition(QSlider.TicksBothSides)
+
         # self.connect(self.slider, SIGNAL('valueChanged(int)'), self.onSlider)
 
         #
@@ -121,7 +178,7 @@ class Watcher(QMainWindow):
         #
         hbox = QHBoxLayout()
 
-        for w in [self.textbox, self.queryButton,
+        for w in [self.textbox, self.queryButton,self.isAcceptedCB, 
                   self.bwdButton, self.fwdButton, self.alignButton,
                   self.grid_cb, slider_label, self.slider]:
             hbox.addWidget(w)
@@ -141,66 +198,116 @@ class Watcher(QMainWindow):
         self.ax1 = self.fig.add_subplot(211)
         self.ax2 = self.fig.add_subplot(212)
 
-        self.ax1.plot(self.currTrial['musLce0'])
-        self.ax1.set_ylim([0.5, 1.5])
-        self.ax2.plot(self.currTrial['emg0'])
-        self.ax2.set_ylim([-6.0, 6.0])
+        self.ax1.plot(self.currTrial['Left Shoulder Flex / Time'])
+        self.ax1.set_ylim([20, 120])
+        self.ax2.plot(self.currTrial['Biceps'])
+        self.ax2.set_ylim([-1.0, 1.0])
+                
+        ### Draw timeOnset lines
+        self.onsetLine1 = self.ax1.axvline(x=self.currOnset(), ymin=0, ymax=100, color='b', linewidth=5)
+        self.onsetLine2 = self.ax2.axvline(x=self.currOnset(), ymin=0, ymax=100, color='r', linewidth=5)
+
+        
         self.canvas.draw()
+    
+    def currOnset(self):
+       return self.allQueryResults[self.idList[self.currTrialNum]]['timeOnset']
 
-    def setOnsetLine(self):
-        maxL = 100
-
-        if self.onsetLine1 in self.ax1.lines:
-            self.ax1.lines.remove(self.onsetLine1)
-        if self.onsetLine2 in self.ax2.lines:
-            self.ax2.lines.remove(self.onsetLine2)
-
-        self.onsetLine1 = self.ax1.axvline(self.currOnset, 0, maxL, color='r')
-        self.onsetLine2 = self.ax2.axvline(self.currOnset, 0, maxL, color='r')
-        self.canvas.draw()
 
     def setOnset(self):
         """Add the field 'onset' to all documents"""
-        l = self.currTrial.musLce0[0:100]
+        l = self.currTrial['Left Shoulder Flex / Time'][0:800]
         base = sum(l) / float(len(l))
-        th = base * 1.02
-        f = lambda i: self.currTrial.musLce0[i] <= th <= self.currTrial.musLce0[min(len(self.currTrial) - 1, i + 1)]
-
-        possible = filter(f, range(len(self.currTrial.musLce0)))
-        if possible:
-            self.currOnset = possible[0]
-        else:
-            self.currOnset = len(self.currTrial) / 2
-        self.allOnsets[self.currTrialId] = self.currOnset
-        self.allAlignedTrials[self.currTrialId] = self.currTrial.drop(xrange(self.currOnset - 100))
-
+        th = base * 0.98
+        f = lambda x: x <= th
+        
+        possible = indices(f, self.currTrial['Left Shoulder Flex / Time'])
+        tOnset = possible[0]
+        self.allOnsets[self.currTrialNum] = tOnset
+        self.allQueryResults[self.idList[self.currTrialNum]]['timeOnset'] = int(tOnset)
+#        self.allAlignedTrials[self.currTrialNum] = self.currTrial.drop(xrange(self.currOnset - 100))
+        
+    def setPickedOnsetLine(self, artist):
+        self.onsetLine1 = artist
+        self.onsetLine1.set_color('g')
+                
     def setCurrTrial(self, n=0):
-        self.currTrialId = n
+        self.currTrialNum = n
         # print(len(self.allTrials))
-        self.currTrial = self.allTrials[self.currTrialId]
-        # print(self.currTrialId, len(self.currTrial))
+        # self.currTrial = self.allTrials[self.currTrialNum]
+        self.currTrial = self.allQueryResults[self.idList[n]]['trialData']
+        # print(self.currTrialNum, len(self.currTrial))
+        self.isAcceptedCB.setChecked(self.allQueryResults[self.idList[n]]['isAccepted'])
+        self.setOnset()
+
+    def setOnsetLine(self, new_x):
+        xs, ys = self.onsetLine1.get_data()
+        #new_xs = [min(rbound, max(lbound, new_x)) for xx in xs]
+        self.onsetLine1.set_data(new_x, ys)
+        self.onsetLine2.set_data(new_x, ys)
+        self.allQueryResults[self.idList[self.currTrialNum]]['timeOnset'] = new_x
+        self.canvas.draw()
+
+    def onPick(self, event):
+        self.setPickedOnsetLine(event.artist)
+        self.canvas.draw()
+
+    def onMouseDown(self, event):
+        self.isDragging = True
+
+    def onMouseUp(self, event):
+        self.isDragging = False
+
+    def onMouseMotion(self, event):
+        if self.isDragging:
+            self.setOnsetLine(event.xdata)
+            
+    def onKey(self, event):
+        if event.key in '[':
+            xs, ys = self.onsetLine1.get_data()
+            new_xs = [xx - 20 for xx in xs]
+            self.onsetLine1.set_data(new_xs, ys)
+        elif event.key in ']':
+            xs, ys = self.onsetLine1.get_data()
+            new_xs = [xx + 20 for xx in xs]
+            self.onsetLine1.set_data(new_xs, ys)
+        elif event.key in '{':
+            xs, ys = self.onsetLine1.get_data()
+            new_xs = [xx - 100 for xx in xs]
+            self.onsetLine1.set_data(new_xs, ys)
+        elif event.key in '}':
+            xs, ys = self.onsetLine1.get_data()
+            new_xs = [xx + 100 for xx in xs]
+            self.onsetLine1.set_data(new_xs, ys)
+        self.canvas.draw()
 
     def onFwd(self):
         """Go forward 1 trial"""
-        self.setCurrTrial(min(self.currTrialId + 1, self.numTrials - 1))
+        self.setCurrTrial(min(self.currTrialNum + 1, self.numTrials - 1))
         self.drawCurrTrial()
         # self.setOnset()
         # self.setOnsetLine()
 
     def onBwd(self):
         """Go backward 1 trial"""
-        self.setCurrTrial(max(self.currTrialId - 1, 0))
+        self.setCurrTrial(max(self.currTrialNum - 1, 0))
         self.drawCurrTrial()
         # self.setOnset()
         # self.setOnsetLine()
-
+    
+    def onChangeIsAccepted(self, value):            
+        self.allQueryResults[self.idList[self.currTrialNum]]['isAccepted'] = \
+            True if value == 2 else False
+        
     def onFinish(self):
         # self.freezeAllOnsets()
+        self.freezeAllQueryResults()
         self.close()
 
-    def onSubmit(self):
+    def onSubmitQuery(self):
         self.queryData(str(self.textbox.toPlainText()))
         self.setCurrTrial()
+        
         self.drawCurrTrial()
         # self.setOnset()
         # self.setOnsetLine()
