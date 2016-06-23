@@ -10,6 +10,8 @@ from matplotlib.backends.backend_qt4agg import (
 from PyQt4.QtCore import *
 from PyQt4.QtGui import *
 
+from scipy.io import savemat
+
 from Freezer import Freezer
 import pandas as pd
 
@@ -152,6 +154,9 @@ class Watcher(QMainWindow):
 
         self.bwdButton = QPushButton("&<<")
         self.connect(self.bwdButton, SIGNAL('clicked()'), self.onBwd)
+        
+        self.saveButton = QPushButton("&Save")
+        self.connect(self.saveButton, SIGNAL('clicked()'), self.onSave)
 
         self.alignButton = QPushButton("&Close")
         self.connect(self.alignButton, SIGNAL('clicked()'), self.onFinish)
@@ -179,7 +184,7 @@ class Watcher(QMainWindow):
         hbox = QHBoxLayout()
 
         for w in [self.textbox, self.queryButton,self.isAcceptedCB, 
-                  self.bwdButton, self.fwdButton, self.alignButton,
+                  self.bwdButton, self.fwdButton, self.saveButton, self.alignButton,
                   self.grid_cb, slider_label, self.slider]:
             hbox.addWidget(w)
             hbox.setAlignment(w, Qt.AlignVCenter)
@@ -198,8 +203,8 @@ class Watcher(QMainWindow):
         self.ax1 = self.fig.add_subplot(211)
         self.ax2 = self.fig.add_subplot(212)
 
-        self.ax1.plot(self.currTrial['Left Shoulder Flex / Time'])
-        self.ax1.set_ylim([20, 120])
+        self.ax1.plot(self.currTrial['Left Elbow Flex / Time'])
+        self.ax1.set_ylim([10, 130])
         self.ax2.plot(self.currTrial['Biceps'])
         self.ax2.set_ylim([-1.0, 1.0])
                 
@@ -216,12 +221,12 @@ class Watcher(QMainWindow):
 
     def setOnset(self):
         """Add the field 'onset' to all documents"""
-        l = self.currTrial['Left Shoulder Flex / Time'][0:800]
+        l = self.currTrial['Left Elbow Flex / Time'][0:800]
         base = sum(l) / float(len(l))
         th = base * 0.98
         f = lambda x: x <= th
         
-        possible = indices(f, self.currTrial['Left Shoulder Flex / Time'])
+        possible = indices(f, self.currTrial['Left Elbow Flex / Time'])
         tOnset = possible[0]
         self.allOnsets[self.currTrialNum] = tOnset
         self.allQueryResults[self.idList[self.currTrialNum]]['timeOnset'] = int(tOnset)
@@ -298,11 +303,19 @@ class Watcher(QMainWindow):
     def onChangeIsAccepted(self, value):            
         self.allQueryResults[self.idList[self.currTrialNum]]['isAccepted'] = \
             True if value == 2 else False
-        
+
     def onFinish(self):
         # self.freezeAllOnsets()
         self.freezeAllQueryResults()
         self.close()
+
+    def onSave(self):
+        # self.freezeAllOnsets()
+        print self.currTrialNum
+        print self.currOnset()
+        tDataFrame = self.allQueryResults[self.idList[self.currTrialNum]]['trialData']
+        tDataFrame = tDataFrame.drop(xrange(self.currOnset() - 1500))
+        tDataFrame.to_csv('D:\Code\local_timegrinder\ProcessedData\S2\FES_S02_L_FR_T%d.csv' % (self.currTrialNum+1))
 
     def onSubmitQuery(self):
         self.queryData(str(self.textbox.toPlainText()))
